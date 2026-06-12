@@ -26,6 +26,15 @@ from gr00t.configs.base_config import get_default_config
 from gr00t.configs.finetune_config import FinetuneConfig
 from gr00t.experiment.experiment import run
 
+# import debugpy
+# try:
+#     debugpy.listen(("localhost", 9505))
+#     print("Waiting for debugger attach")
+#     debugpy.wait_for_client()
+# except Exception as e:
+#     pass
+
+# print("hello\n"*10)
 
 # Make sure the user provided modality config is registered.
 def load_modality_config(modality_config_path: str):
@@ -89,7 +98,7 @@ if __name__ == "__main__":
 
     config.model.load_bf16 = False
     config.model.reproject_vision = False
-    config.model.model_name = "nvidia/Cosmos-Reason2-2B"
+    config.model.model_name = ft_config.vlm_path or "/root/models--nvidia--Cosmos-Reason2-2B"
     config.model.backbone_trainable_params_fp32 = True
     config.model.use_relative_action = True
 

@@ -6,8 +6,8 @@ NUM_GPUS="${NUM_GPUS:-1}"
 MASTER_PORT="${MASTER_PORT:-29500}"
 SAVE_STEPS="${SAVE_STEPS:-1000}"
 MAX_STEPS="${MAX_STEPS:-10000}"
-USE_WANDB="${USE_WANDB:-1}"
-DATALOADER_NUM_WORKERS="${DATALOADER_NUM_WORKERS:-4}"
+USE_WANDB="${USE_WANDB:-0}"
+DATALOADER_NUM_WORKERS="${DATALOADER_NUM_WORKERS:-8}"
 GLOBAL_BATCH_SIZE="${GLOBAL_BATCH_SIZE:-32}"
 SHARD_SIZE="${SHARD_SIZE:-1024}"
 NUM_SHARDS_PER_EPOCH="${NUM_SHARDS_PER_EPOCH:-100000}"
@@ -118,7 +118,7 @@ LAUNCH_CMD=(
     --num_gpus "$NUM_GPUS"
     --output_dir "$OUTPUT_DIR"
     --save_steps "$SAVE_STEPS"
-    --save_total_limit 5
+    --save_total_limit 4
     --max_steps "$MAX_STEPS"
     --warmup_ratio 0.05
     --weight_decay 1e-5
@@ -160,7 +160,7 @@ if [ "$NUM_GPUS" = "1" ]; then
     # Restrict to a single GPU so HF Trainer doesn't wrap the model in DataParallel,
     # which crashes with a StopIteration error in the model's device property.
     export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0}"
-    exec python "${LAUNCH_CMD[@]}"
+    exec uv run python "${LAUNCH_CMD[@]}"
 fi
 
-exec torchrun --nproc_per_node="$NUM_GPUS" --master_port="$MASTER_PORT" "${LAUNCH_CMD[@]}"
+exec uv run torchrun --nproc_per_node="$NUM_GPUS" --master_port="$MASTER_PORT" "${LAUNCH_CMD[@]}"

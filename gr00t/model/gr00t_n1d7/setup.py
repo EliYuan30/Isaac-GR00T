@@ -44,6 +44,23 @@ def convert_tensors_to_lists(obj):
         return obj
 
 
+def _load_filtered_checkpoint_state_dict(
+        checkpoint_path: Path, excluded_prefixes: tuple[str, ...],
+) -> dict[str, torch.Tensor]:
+    from safetensors.torch import load_file as load_safetensors_file
+
+    state_dict = {}
+    index_path = checkpoint_path / "model.safetensors.index.json"
+    with open(index_path, "r", encoding="utf-8") as f:
+        weight_map = json.load(f).get("weight_map", {})
+
+    for shard_name in sorted(set(weight_map.values())):
+        shard = load_safetensors_file(checkpoint_path / shard_name)
+        state_dict.update({k: v for k, v in shard.items() if not k.startswith(excluded_prefixes)})
+    return state_dict
+
+
+
 class Gr00tN1d7Pipeline(ModelPipeline):
     model_class = Gr00tN1d7
     processor_class = Gr00tN1d7Processor
@@ -79,20 +96,61 @@ class Gr00tN1d7Pipeline(ModelPipeline):
         """Setup model with proper vocabulary expansion."""
         skip_weight_loading = getattr(self.config.training, "skip_weight_loading", False)
         if self.config.training.start_from_checkpoint is not None and not skip_weight_loading:
-            model, loading_info = AutoModel.from_pretrained(
-                self.config.training.start_from_checkpoint,
-                tune_llm=self.config.model.tune_llm,
-                tune_visual=self.config.model.tune_visual,
-                tune_projector=self.config.model.tune_projector,
-                tune_diffusion_model=self.config.model.tune_diffusion_model,
-                tune_vlln=self.config.model.tune_vlln,
-                state_dropout_prob=self.config.model.state_dropout_prob,
-                backbone_trainable_params_fp32=self.config.model.backbone_trainable_params_fp32,
-                load_bf16=self.config.model.load_bf16,
-                transformers_loading_kwargs=self.transformers_loading_kwargs,
-                output_loading_info=True,
-                **self.transformers_loading_kwargs,
-            )
+            config_path = Path(self.config.training.start_from_checkpoint) / "config.json"
+            with open(config_path, "r", encoding="utf-8") as f:
+                config = json.load(f)
+            checkpoint_model_name = config["model_name"]
+            replace_backbone = self.config.model.model_name not in [checkpoint_model_name, "/root/models--nvidia--Cosmos-Reason2-2B"]
+            if not replace_backbone:
+                model, loading_info = AutoModel.from_pretrained(
+                    self.config.training.start_from_checkpoint,
+                    tune_llm=self.config.model.tune_llm,
+                    tune_visual=self.config.model.tune_visual,
+                    tune_projector=self.config.model.tune_projector,
+                    tune_diffusion_model=self.config.model.tune_diffusion_model,
+                    tune_vlln=self.config.model.tune_vlln,
+                    state_dropout_prob=self.config.model.state_dropout_prob,
+                    backbone_trainable_params_fp32=self.config.model.backbone_trainable_params_fp32,
+                    load_bf16=self.config.model.load_bf16,
+                    transformers_loading_kwargs=self.transformers_loading_kwargs,
+                    output_loading_info=True,
+                    **self.transformers_loading_kwargs,
+                )
+            else:
+                logging.info(
+                    "Replacing VLM backbone: checkpoint uses %s, requested %s. "
+                    "Loading checkpoint without backbone.* weights.",
+                    checkpoint_model_name,
+                    self.config.model.model_name,
+                )
+                state_dict = _load_filtered_checkpoint_state_dict(
+                    checkpoint_path=Path(self.config.training.start_from_checkpoint)    ,
+                    excluded_prefixes=("backbone.",),
+                )
+                model_config = Gr00tN1d7Config.from_pretrained(
+                    self.config.training.start_from_checkpoint,
+                    model_name = self.config.model.model_name,
+                    tune_llm=self.config.model.tune_llm,
+                    tune_visual=self.config.model.tune_visual,
+                    tune_projector=self.config.model.tune_projector,
+                    tune_diffusion_model=self.config.model.tune_diffusion_model,
+                    tune_vlln=self.config.model.tune_vlln,
+                    state_dropout_prob=self.config.model.state_dropout_prob,
+                    backbone_trainable_params_fp32=self.config.model.backbone_trainable_params_fp32,
+                    load_bf16=self.config.model.load_bf16,
+                    **self.transformers_loading_kwargs,
+                )
+                model = self.model_class(
+                    model_config,
+                    transformers_loading_kwargs=self.transformers_loading_kwargs,
+                )
+                model.to(torch.bfloat16)
+                load_result = model.load_state_dict(state_dict, strict=False)
+                loading_info = {
+                    "missing_keys": list(load_result.missing_keys),
+                    "unexpected_keys": list(load_result.unexpected_keys),
+                    "mismatched_keys": [],
+                }
 
             missing_keys = loading_info.get("missing_keys", [])
             mask_token_missing = any("mask_token" in key for key in missing_keys)
@@ -103,9 +161,12 @@ class Gr00tN1d7Pipeline(ModelPipeline):
                     )
                 logging.info("mask_token not in checkpoint - initialized")
 
-            unexpected_keys = loading_info.get("unexpected_keys", [])
-            mismatched_keys = loading_info.get("mismatched_keys", [])
-            other_missing = [k for k in missing_keys if "mask_token" not in k]
+            unexpected_keys = [k for k in loading_info.get("unexpected_keys", [])
+                               if not (replace_backbone and k.startswith("backbone."))]
+            mismatched_keys = [k for k in loading_info.get("mismatched_keys", [])
+                               if not (replace_backbone and (k[0] if isinstance(k, tuple) else k).startswith("backbone."))]
+            other_missing = [k for k in missing_keys
+                             if "mask_token" not in k and not (replace_backbone and k.startswith("backbone."))]
             errors = []
             if other_missing:
                 errors.append(f"Missing keys ({len(other_missing)}): {other_missing}")

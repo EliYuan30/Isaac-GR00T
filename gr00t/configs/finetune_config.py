@@ -171,6 +171,9 @@ class FinetuneConfig:
     The processor (tokenizer/config) is still loaded from base_model_path.
     Useful for CI/testing to skip the slow checkpoint shard loading."""
 
+    vlm_path: str | None = None
+    """Path to VLM backbone checkpoint."""
+
     def __post_init__(self) -> None:
         if self.gradient_accumulation_steps < 1:
             raise ValueError(
